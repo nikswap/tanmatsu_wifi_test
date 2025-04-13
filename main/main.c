@@ -11,6 +11,7 @@
 #include "pax_fonts.h"
 #include "pax_gfx.h"
 #include "pax_text.h"
+#include "portmacro.h"
 
 // Constants
 static char const TAG[] = "main";
@@ -66,7 +67,7 @@ void app_main(void) {
 
     while (1) {
         bsp_input_event_t event;
-        if (xQueueReceive(input_event_queue, &event, pdMS_TO_TICKS(10)) == pdTRUE) {
+        if (xQueueReceive(input_event_queue, &event, portMAX_DELAY) == pdTRUE) {
             switch (event.type) {
                 case INPUT_EVENT_TYPE_KEYBOARD: {
                     if (event.args_keyboard.ascii != '\b' ||
@@ -98,28 +99,38 @@ void app_main(void) {
                         bsp_input_set_backlight_brightness(100);
                     }
 
-                    pax_simple_rect(&fb, 0xFFFFFFFF, 0, 0, pax_buf_get_width(&fb), 72);
-                    pax_draw_text(&fb, 0xFF000000, pax_font_sky_mono, 16, 0, 0, "Navigation event");
+                    pax_simple_rect(&fb, 0xFFFFFFFF, 0, 100, pax_buf_get_width(&fb), 72);
+                    pax_draw_text(&fb, 0xFF000000, pax_font_sky_mono, 16, 0, 100 + 0, "Navigation event");
                     char text[64];
                     snprintf(text, sizeof(text), "Key:       0x%0" PRIX32, (uint32_t)event.args_navigation.key);
-                    pax_draw_text(&fb, 0xFF000000, pax_font_sky_mono, 16, 0, 18, text);
+                    pax_draw_text(&fb, 0xFF000000, pax_font_sky_mono, 16, 0, 100 + 18, text);
                     snprintf(text, sizeof(text), "State:     %s", event.args_navigation.state ? "pressed" : "released");
-                    pax_draw_text(&fb, 0xFF000000, pax_font_sky_mono, 16, 0, 36, text);
+                    pax_draw_text(&fb, 0xFF000000, pax_font_sky_mono, 16, 0, 100 + 36, text);
                     snprintf(text, sizeof(text), "Modifiers: 0x%0" PRIX32, event.args_navigation.modifiers);
-                    pax_draw_text(&fb, 0xFF000000, pax_font_sky_mono, 16, 0, 54, text);
+                    pax_draw_text(&fb, 0xFF000000, pax_font_sky_mono, 16, 0, 100 + 54, text);
                     blit();
                     break;
                 }
                 case INPUT_EVENT_TYPE_ACTION: {
-                    ESP_LOGI(TAG, "Action event %0" PRIX32 ": %s", (uint32_t)event.args_action.type,
+                    ESP_LOGI(TAG, "Action event 0x%0" PRIX32 ": %s", (uint32_t)event.args_action.type,
                              event.args_action.state ? "yes" : "no");
-                    pax_simple_rect(&fb, 0xFFFFFFFF, 0, 0, pax_buf_get_width(&fb), 72);
-                    pax_draw_text(&fb, 0xFF000000, pax_font_sky_mono, 16, 0, 0, "Action event");
+                    pax_simple_rect(&fb, 0xFFFFFFFF, 0, 200 + 0, pax_buf_get_width(&fb), 72);
+                    pax_draw_text(&fb, 0xFF000000, pax_font_sky_mono, 16, 0, 200 + 0, "Action event");
                     char text[64];
                     snprintf(text, sizeof(text), "Type:      0x%0" PRIX32, (uint32_t)event.args_action.type);
-                    pax_draw_text(&fb, 0xFF000000, pax_font_sky_mono, 16, 0, 36, text);
+                    pax_draw_text(&fb, 0xFF000000, pax_font_sky_mono, 16, 0, 200 + 36, text);
                     snprintf(text, sizeof(text), "State:     %s", event.args_action.state ? "yes" : "no");
-                    pax_draw_text(&fb, 0xFF000000, pax_font_sky_mono, 16, 0, 54, text);
+                    pax_draw_text(&fb, 0xFF000000, pax_font_sky_mono, 16, 0, 200 + 54, text);
+                    blit();
+                    break;
+                }
+                case INPUT_EVENT_TYPE_SCANCODE: {
+                    ESP_LOGI(TAG, "Scancode event 0x%0" PRIX32, (uint32_t)event.args_scancode.scancode);
+                    pax_simple_rect(&fb, 0xFFFFFFFF, 0, 300 + 0, pax_buf_get_width(&fb), 72);
+                    pax_draw_text(&fb, 0xFF000000, pax_font_sky_mono, 16, 0, 300 + 0, "Scancode event");
+                    char text[64];
+                    snprintf(text, sizeof(text), "Scancode:  0x%0" PRIX32, (uint32_t)event.args_scancode.scancode);
+                    pax_draw_text(&fb, 0xFF000000, pax_font_sky_mono, 16, 0, 300 + 36, text);
                     blit();
                     break;
                 }
