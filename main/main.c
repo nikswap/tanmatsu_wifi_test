@@ -1,12 +1,15 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 #include "bsp/device.h"
 #include "bsp/display.h"
 #include "bsp/input.h"
 #include "bsp/power.h"
 #include "bsp/led.h"
 #include "driver/gpio.h"
+#include "esp_err.h"
 #include "esp_event.h"
+#include "esp_hosted_custom.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_types.h"
 #include "esp_log.h"
@@ -14,6 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "hal/lcd_types.h"
+#include "host/port/sdio_wrapper.h"
 #include "nvs_flash.h"
 #include "pax_fonts.h"
 #include "pax_gfx.h"
@@ -22,12 +26,9 @@
 #include "regex.h"
 #include "sdkconfig.h"
 #include "wifi_connection.h"
-#include "host/port/sdio_wrapper.h"
-#include "esp_hosted_custom.h"
 
 //Wifi stuff
 #define DEFAULT_SCAN_LIST_SIZE 20
-static const char *WIFITAG = "scan";
 
 // Constants
 static char const TAG[] = "main";
@@ -267,6 +268,108 @@ static void wifi_scan(void)
     }
 }
 
+static inline void wifi_desc_record(wifi_ap_record_t* record) {
+    // Make a string representation of BSSID.
+    char* bssid_str = malloc(3 * 6);
+    if (!bssid_str) return;
+    snprintf(bssid_str, 3 * 6, "%02X:%02X:%02X:%02X:%02X:%02X", record->bssid[0], record->bssid[1], record->bssid[2],
+             record->bssid[3], record->bssid[4], record->bssid[5]);
+
+    // Make a string representation of 11b/g/n modes.
+    char* phy_str = malloc(9);
+    if (!phy_str) {
+        free(bssid_str);
+        return;
+    }
+    *phy_str = 0;
+    if (record->phy_11b | record->phy_11g | record->phy_11n) {
+        strcpy(phy_str, " 1");
+    }
+    if (record->phy_11b) {
+        strcat(phy_str, "/b");
+    }
+    if (record->phy_11g) {
+        strcat(phy_str, "/g");
+    }
+    if (record->phy_11n) {
+        strcat(phy_str, "/n");
+    }
+    phy_str[2] = '1';
+
+    printf("AP %s %s rssi=%hhd%s\r\n", bssid_str, record->ssid, record->rssi, phy_str);
+    free(bssid_str);
+    free(phy_str);
+}
+
+static esp_err_t scan_for_networks(wifi_ap_record_t** out_aps, uint16_t* out_aps_length) {
+    if (wifi_remote_get_initialized()) {
+        esp_err_t res;
+
+        wifi_config_t wifi_config = {0};
+        ESP_LOGI(TAG, "************* Stopping Wifi *************");
+        ESP_RETURN_ON_ERROR(esp_wifi_stop(), TAG, "Failed to stop WiFi");
+        ESP_LOGI(TAG, "************* Setting Wifi mode *************");
+        ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "Failed to set WiFi mode");
+        ESP_LOGI(TAG, "************* Configuring Wifi *************");
+        ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wifi_config), TAG, "Failed to set WiFi configuration");
+        ESP_LOGI(TAG, "************* Starting Wifi *************");
+        ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "Failed to start WiFi");
+
+        // esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_SCAN_DONE, wifi_scan_done_handler, NULL);
+        wifi_scan_config_t cfg = {
+            .ssid      = NULL,
+            .bssid     = NULL,
+            .channel   = 0,
+            .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+            .scan_time = {.active = {0, 0}},
+        };
+        res = esp_wifi_scan_start(&cfg, true);
+        if (res != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to start scan");
+            return res;
+        }
+
+        uint16_t num_ap = 0;
+        res             = esp_wifi_scan_get_ap_num(&num_ap);
+        if (res != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to get number of APs");
+            return res;
+        }
+
+        printf("Found %u APs\r\n", num_ap);
+
+        wifi_ap_record_t* aps = malloc(sizeof(wifi_ap_record_t) * num_ap);
+        if (!aps) {
+            ESP_LOGE(TAG, "Out of memory (failed to allocate %zd bytes)", sizeof(wifi_ap_record_t) * num_ap);
+            num_ap = 0;
+            esp_wifi_scan_get_ap_records(&num_ap, NULL);
+            return ESP_ERR_NO_MEM;
+        }
+
+        res = esp_wifi_scan_get_ap_records(&num_ap, aps);
+        if (res != ESP_OK) {
+            ESP_LOGE(TAG, "Failed to fetch AP records");
+            free(aps);
+            return res;
+        }
+
+        for (uint16_t i = 0; i < num_ap; i++) {
+            wifi_desc_record(&aps[i]);
+        }
+
+        if (out_aps) {
+            *out_aps        = aps;
+            *out_aps_length = num_ap;
+        } else {
+            free(aps);
+        }
+    } else {
+        printf("WiFi stack not initialized\nThe WiFi stack is not initialized. Please try again later.\n");
+        return ESP_ERR_NOT_FOUND;
+    }
+    return ESP_OK;
+}
+
 void app_main(void) {
     // Start the GPIO interrupt service
     gpio_install_isr_service(0);
@@ -303,7 +406,12 @@ void app_main(void) {
     //     }
     //     ESP_LOGI(TAG, "Channel \t\t%d", ap_info[i].primary);
     // }
+
     wifi_scan();
+
+    // wifi_ap_record_t* aps     = NULL;
+    // uint16_t          num_aps = 0;
+    // res     = scan_for_networks(&aps, &num_aps);
 
     // Initialize the Board Support Package
     ESP_ERROR_CHECK(bsp_device_initialize());
