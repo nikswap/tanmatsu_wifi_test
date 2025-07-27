@@ -6,6 +6,8 @@ idf_component_register(
 		fatfs
 		nvs_flash
 		badge-bsp
+		esp-hosted-tanmatsu
+		wifi-manager
 	INCLUDE_DIRS
 		"."
 )

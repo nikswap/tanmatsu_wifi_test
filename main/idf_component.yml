@@ -3,3 +3,13 @@ dependencies:
     version: '>=5.3.0'
   badgeteam/badge-bsp: ^0.2.8
   robotman2412/pax-gfx: ^1.1.2
+  nicolaielectronics/wifi-manager:
+    version: ^0.1.1
+  nicolaielectronics/esp-wifi-remote-tanmatsu:
+    version: ^0.0.1
+    rules:
+    - if: target == esp32p4
+  nicolaielectronics/esp-hosted-tanmatsu:
+    version: ^0.0.1
+    rules:
+    - if: target == esp32p4

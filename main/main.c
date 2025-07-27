@@ -1,18 +1,33 @@
 #include <stdio.h>
+#include <string.h>
 #include "bsp/device.h"
 #include "bsp/display.h"
 #include "bsp/input.h"
+#include "bsp/power.h"
 #include "bsp/led.h"
 #include "driver/gpio.h"
+#include "esp_event.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_types.h"
 #include "esp_log.h"
+#include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
 #include "hal/lcd_types.h"
 #include "nvs_flash.h"
 #include "pax_fonts.h"
 #include "pax_gfx.h"
 #include "pax_text.h"
 #include "portmacro.h"
+#include "regex.h"
+#include "sdkconfig.h"
+#include "wifi_connection.h"
+#include "host/port/sdio_wrapper.h"
+#include "esp_hosted_custom.h"
+
+//Wifi stuff
+#define DEFAULT_SCAN_LIST_SIZE 20
+static const char *WIFITAG = "scan";
 
 // Constants
 static char const TAG[] = "main";
@@ -33,6 +48,225 @@ void blit(void) {
     bsp_display_blit(0, 0, display_h_res, display_v_res, pax_buf_get_pixels(&fb));
 }
 
+static bool initialized = false;
+
+bool wifi_remote_get_initialized(void) {
+    return initialized;
+}
+
+static esp_err_t wifi_remote_verify_radio_ready(void) {
+    void* card = hosted_sdio_init();
+    if (card == NULL) {
+        ESP_LOGE(TAG, "Failed to initialize SDIO for radio");
+        return ESP_FAIL;
+    }
+    esp_err_t res = hosted_sdio_card_init(NULL);
+    if (res == ESP_OK) {
+        ESP_LOGI(TAG, "Radio ready");
+    } else {
+        ESP_LOGI(TAG, "Radio not ready");
+    }
+    return res;
+}
+
+esp_err_t wifi_remote_initialize(void) {
+    if (initialized) {
+        return ESP_OK;
+    }
+    ESP_LOGW(TAG, "Switching radio off...\r\n");
+    bsp_power_set_radio_state(BSP_POWER_RADIO_STATE_OFF);
+    vTaskDelay(pdMS_TO_TICKS(50));
+    ESP_LOGW(TAG, "Switching radio to application mode...\r\n");
+    bsp_power_set_radio_state(BSP_POWER_RADIO_STATE_APPLICATION);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    ESP_LOGW(TAG, "Testing connection to radio...\r\n");
+    if (wifi_remote_verify_radio_ready() != ESP_OK) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    ESP_LOGW(TAG, "Starting ESP hosted...\r\n");
+    esp_hosted_host_init();
+    initialized = true;
+    return ESP_OK;
+}
+
+static void print_auth_mode(int authmode)
+{
+    switch (authmode) {
+    case WIFI_AUTH_OPEN:
+        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_OPEN");
+        break;
+    case WIFI_AUTH_OWE:
+        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_OWE");
+        break;
+    case WIFI_AUTH_WEP:
+        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WEP");
+        break;
+    case WIFI_AUTH_WPA_PSK:
+        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA_PSK");
+        break;
+    case WIFI_AUTH_WPA2_PSK:
+        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA2_PSK");
+        break;
+    case WIFI_AUTH_WPA_WPA2_PSK:
+        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA_WPA2_PSK");
+        break;
+    case WIFI_AUTH_ENTERPRISE:
+        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_ENTERPRISE");
+        break;
+    case WIFI_AUTH_WPA3_PSK:
+        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA3_PSK");
+        break;
+    case WIFI_AUTH_WPA2_WPA3_PSK:
+        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA2_WPA3_PSK");
+        break;
+    case WIFI_AUTH_WPA3_ENTERPRISE:
+        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA3_ENTERPRISE");
+        break;
+    case WIFI_AUTH_WPA2_WPA3_ENTERPRISE:
+        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA2_WPA3_ENTERPRISE");
+        break;
+    case WIFI_AUTH_WPA3_ENT_192:
+        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_WPA3_ENT_192");
+        break;
+    default:
+        ESP_LOGI(TAG, "Authmode \tWIFI_AUTH_UNKNOWN");
+        break;
+    }
+}
+
+static void print_cipher_type(int pairwise_cipher, int group_cipher)
+{
+    switch (pairwise_cipher) {
+    case WIFI_CIPHER_TYPE_NONE:
+        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_NONE");
+        break;
+    case WIFI_CIPHER_TYPE_WEP40:
+        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_WEP40");
+        break;
+    case WIFI_CIPHER_TYPE_WEP104:
+        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_WEP104");
+        break;
+    case WIFI_CIPHER_TYPE_TKIP:
+        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_TKIP");
+        break;
+    case WIFI_CIPHER_TYPE_CCMP:
+        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_CCMP");
+        break;
+    case WIFI_CIPHER_TYPE_TKIP_CCMP:
+        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_TKIP_CCMP");
+        break;
+    case WIFI_CIPHER_TYPE_AES_CMAC128:
+        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_AES_CMAC128");
+        break;
+    case WIFI_CIPHER_TYPE_SMS4:
+        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_SMS4");
+        break;
+    case WIFI_CIPHER_TYPE_GCMP:
+        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_GCMP");
+        break;
+    case WIFI_CIPHER_TYPE_GCMP256:
+        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_GCMP256");
+        break;
+    default:
+        ESP_LOGI(TAG, "Pairwise Cipher \tWIFI_CIPHER_TYPE_UNKNOWN");
+        break;
+    }
+
+    switch (group_cipher) {
+    case WIFI_CIPHER_TYPE_NONE:
+        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_NONE");
+        break;
+    case WIFI_CIPHER_TYPE_WEP40:
+        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_WEP40");
+        break;
+    case WIFI_CIPHER_TYPE_WEP104:
+        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_WEP104");
+        break;
+    case WIFI_CIPHER_TYPE_TKIP:
+        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_TKIP");
+        break;
+    case WIFI_CIPHER_TYPE_CCMP:
+        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_CCMP");
+        break;
+    case WIFI_CIPHER_TYPE_TKIP_CCMP:
+        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_TKIP_CCMP");
+        break;
+    case WIFI_CIPHER_TYPE_SMS4:
+        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_SMS4");
+        break;
+    case WIFI_CIPHER_TYPE_GCMP:
+        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_GCMP");
+        break;
+    case WIFI_CIPHER_TYPE_GCMP256:
+        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_GCMP256");
+        break;
+    default:
+        ESP_LOGI(TAG, "Group Cipher \tWIFI_CIPHER_TYPE_UNKNOWN");
+        break;
+    }
+}
+
+static void wifi_scan(void)
+{
+    ESP_LOGI(TAG, "************* Before init netif *************");
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_LOGI(TAG, "************* Netif init, before loop create *************");
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    ESP_LOGI(TAG, "************* Loop created. Before getting defailt wifi sta *************");
+    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+    assert(sta_netif);
+    ESP_LOGI(TAG, "************* Got sta_netif. Before wifi cfg init *************");
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_err_t err = esp_wifi_init(&cfg);
+    if (err != ESP_OK) {
+        printf("ERROR configuring wifi %d\n", err);
+        return;
+    }
+    // ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    ESP_LOGI(TAG, "************* Wifi CFG ok. Before setting mode *************");
+
+    uint16_t number = DEFAULT_SCAN_LIST_SIZE;
+    wifi_ap_record_t ap_info[DEFAULT_SCAN_LIST_SIZE];
+    uint16_t ap_count = 0;
+    memset(ap_info, 0, sizeof(ap_info));
+
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_LOGI(TAG, "************* Set mode done. Before starting wifi *************");
+    ESP_ERROR_CHECK(esp_wifi_start());
+    ESP_LOGI(TAG, "************* Wifi started. Before scanning *************");
+
+// #ifdef USE_CHANNEL_BITMAP
+//     wifi_scan_config_t *scan_config = (wifi_scan_config_t *)calloc(1,sizeof(wifi_scan_config_t));
+//     if (!scan_config) {
+//         ESP_LOGE(TAG, "Memory Allocation for scan config failed!");
+//         return;
+//     }
+//     array_2_channel_bitmap(channel_list, CHANNEL_LIST_SIZE, scan_config);
+//     esp_wifi_scan_start(scan_config, true);
+//     free(scan_config);
+
+// #else
+    esp_wifi_scan_start(NULL, true);
+// #endif /*USE_CHANNEL_BITMAP*/
+
+    ESP_LOGI(TAG, "Max AP number ap_info can hold = %u", number);
+    ESP_ERROR_CHECK(esp_wifi_scan_get_ap_num(&ap_count));
+    ESP_ERROR_CHECK(esp_wifi_scan_get_ap_records(&number, ap_info));
+    ESP_LOGI(TAG, "Total APs scanned = %u, actual AP number ap_info holds = %u", ap_count, number);
+    for (int i = 0; i < number; i++) {
+        ESP_LOGI(TAG, "SSID \t\t%s", ap_info[i].ssid);
+        ESP_LOGI(TAG, "RSSI \t\t%d", ap_info[i].rssi);
+        print_auth_mode(ap_info[i].authmode);
+        if (ap_info[i].authmode != WIFI_AUTH_WEP) {
+            print_cipher_type(ap_info[i].pairwise_cipher, ap_info[i].group_cipher);
+        }
+        ESP_LOGI(TAG, "Channel \t\t%d", ap_info[i].primary);
+    }
+}
+
 void app_main(void) {
     // Start the GPIO interrupt service
     gpio_install_isr_service(0);
@@ -44,6 +278,32 @@ void app_main(void) {
         res = nvs_flash_init();
     }
     ESP_ERROR_CHECK(res);
+
+    ESP_LOGI(TAG, "************* Before WiFi stack initialize.... *************");
+    if (!(wifi_remote_initialize() == ESP_OK)) {
+        ESP_LOGE(TAG, "WiFi stack not initialized, cannot scan");
+        vTaskDelay(2000 / portTICK_PERIOD_MS);
+        return;
+    }
+    ESP_LOGI(TAG, "WiFi stack initialized, can scan");
+
+    // esp_wifi_scan_start(NULL, true);
+    // uint16_t ap_count = 0;
+    // wifi_ap_record_t ap_info[DEFAULT_SCAN_LIST_SIZE];
+    // memset(ap_info, 0, sizeof(ap_info));
+    // ESP_ERROR_CHECK(esp_wifi_scan_get_ap_num(&ap_count));
+    // ESP_ERROR_CHECK(esp_wifi_scan_get_ap_records(&number, ap_info));
+    // ESP_LOGI(TAG, "Total APs scanned = %u, actual AP number ap_info holds = %u", ap_count, number);
+    // for (int i = 0; i < number; i++) {
+    //     ESP_LOGI(TAG, "SSID \t\t%s", ap_info[i].ssid);
+    //     ESP_LOGI(TAG, "RSSI \t\t%d", ap_info[i].rssi);
+    //     print_auth_mode(ap_info[i].authmode);
+    //     if (ap_info[i].authmode != WIFI_AUTH_WEP) {
+    //         print_cipher_type(ap_info[i].pairwise_cipher, ap_info[i].group_cipher);
+    //     }
+    //     ESP_LOGI(TAG, "Channel \t\t%d", ap_info[i].primary);
+    // }
+    wifi_scan();
 
     // Initialize the Board Support Package
     ESP_ERROR_CHECK(bsp_device_initialize());
